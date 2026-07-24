@@ -1134,7 +1134,8 @@ class SkiaLayerTest {
         // Until the issue is fixed in other redrawers
         // Don't use assumeTrue, as uiTest iterates over multiple renderers,
         // and if one of them is skipped, the whole test is skipped
-        if (renderApi != GraphicsApi.METAL) return@uiTest
+        val fixedRenderApis = setOf(GraphicsApi.METAL/*, GraphicsApi.DIRECT3D*/)
+        if (renderApi !in fixedRenderApis) return@uiTest
 
         val bgColor = Color.GREEN
         val fgColor = Color.BLACK
@@ -1147,8 +1148,8 @@ class SkiaLayerTest {
         // child's content) or green (this background) - never a flash of some other color.
 
         val backgroundWindow = JFrame().also {
-            it.size = Dimension(1000, 1000)
             it.location = Point(200, 200)
+            it.size = Dimension(1000, 1000)
             it.contentPane.background = bgColor
         }
         backgroundWindow.isVisible = true
@@ -1196,7 +1197,7 @@ class SkiaLayerTest {
             add("-cp")
             add(System.getProperty("java.class.path"))
             System.getProperties().stringPropertyNames()
-                .filter { it.startsWith("skiko.") }
+                .filter { it.startsWith("skiko.") || it.startsWith("sun.") }
                 .forEach { add("-D$it=${System.getProperty(it)}") }
             add("--add-opens")
             add("java.desktop/sun.font=ALL-UNNAMED")
