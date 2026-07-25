@@ -18,6 +18,8 @@ import mutableListOfLinkerOptions
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.Project
+import org.gradle.api.publish.PublishingExtension
+import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.kotlin.dsl.getByName
@@ -474,24 +476,61 @@ fun SkikoProjectContext.configureWindowsNativeTarget(
             val def = importLibDir.resolve("$libBaseName-$targetString.def")
             def.writeText("LIBRARY $dllOutputName\nEXPORTS\n${names.joinToString("\n")}\n")
             val importLib = importLibDir.resolve(importLibName)
-            val dlltool = ProcessBuilder("dlltool", "-d", def.absolutePath, "-D", dllOutputName, "-l", importLib.absolutePath)
-                .redirectErrorStream(true).start()
-            val out = dlltool.inputStream.bufferedReader().readText()
-            check(dlltool.waitFor() == 0) { "dlltool failed:\n$out" }
+            // Prefer llvm-dlltool (ships with LLVM, always alongside clang-cl /
+            // lld-link, incl. CI runners); fall back to GNU dlltool.
+            val candidates = listOf(
+                listOf("llvm-dlltool", "-m", "i386:x86-64", "-d", def.absolutePath, "-D", dllOutputName, "-l", importLib.absolutePath),
+                listOf("dlltool", "-d", def.absolutePath, "-D", dllOutputName, "-l", importLib.absolutePath),
+            )
+            var made = false
+            var lastErr = ""
+            for (cmd in candidates) {
+                try {
+                    val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+                    val toolOut = p.inputStream.bufferedReader().readText()
+                    if (p.waitFor() == 0) { made = true; break }
+                    lastErr = "${cmd.first()}: $toolOut"
+                } catch (e: java.io.IOException) {
+                    lastErr = "${cmd.first()} not found: ${e.message}"
+                }
+            }
+            check(made) { "import-lib generation failed. $lastErr" }
             logger.lifecycle("Route 1a: generated ${importLib.absolutePath} (${names.size} exports) + $dllOutputName")
         }
     }
 
-    // 4. Point the K/N cinterop linkerOpts at the import lib (absolute path;
-    //    portable packaging is a later step). The DLL must be on PATH at runtime.
-    configureCinterop(
-        cinteropName, os, arch, target, targetString,
-        listOf("-L${importLibDir.absolutePath.replace("\\", "/")}", "-l$libBaseName-$targetString")
-    )
-
-    // 5. Building the klib triggers the DLL + import-lib build.
+    // 4. Embed the import library INTO the klib via -include-binary (exactly how
+    //    the mac/linux legs embed their static Skia archives). The import-lib
+    //    CONTENT travels inside the klib, so the PUBLISHED artifact is portable
+    //    (no absolute path baked in). The consumer's link extracts + links it;
+    //    only skiko-<target>.dll is needed at RUNTIME (published below).
+    val importLibPath = importLibDir.resolve(importLibName).absolutePath
+    target.binaries.all {
+        freeCompilerArgs += listOf("-include-binary", importLibPath)
+    }
     target.compilations.all {
+        compilerOptions.configure {
+            freeCompilerArgs.addAll(listOf("-include-binary", importLibPath))
+        }
         compileTaskProvider.configure { dependsOn(genImportLib) }
+    }
+
+    // 5. Publish the runtime DLL as an artifact on the mingwX64 publication
+    //    (classifier=windows-x64, ext=dll) so consumers can resolve it and ship
+    //    it next to their executable.
+    val dllProvider = linkTask.map { it.outDir.get().asFile.resolve(dllOutputName) }
+    val publicationName = target.name
+    project.pluginManager.withPlugin("maven-publish") {
+        val publishing = project.extensions.getByType(PublishingExtension::class.java)
+        publishing.publications.withType(MavenPublication::class.java).configureEach {
+            if (name == publicationName) {
+                artifact(dllProvider) {
+                    classifier = "windows-x64"
+                    extension = "dll"
+                    builtBy(linkTask)
+                }
+            }
+        }
     }
 }
 
