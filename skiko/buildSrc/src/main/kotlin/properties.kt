@@ -304,6 +304,11 @@ class SkikoArtifacts(
 
     companion object {
         const val DEFAULT_ARTIFACT_ID_PREFIX = "skiko"
-        const val DEFAULT_GROUP_ID = "org.jetbrains.skiko"
+        // bitsycore fork: published Maven coordinates are rebranded under the
+        // fork's own group so it's clearly a fork (com.bitsycore.skiko:skiko,
+        // :skiko-mingwx64, …). Only the Maven coordinate changes — the Kotlin /
+        // Android PACKAGE namespace stays org.jetbrains.skiko.*, so consumers'
+        // imports (org.jetbrains.skiko.node.RenderNode, …) are unaffected.
+        const val DEFAULT_GROUP_ID = "com.bitsycore.skiko"
     }
 }

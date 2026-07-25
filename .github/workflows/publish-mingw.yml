@@ -2,7 +2,10 @@ name: Publish skiko (mingwX64)
 
 # Route 1a: builds the Kotlin/Native Windows (mingwX64) skiko artifacts on a
 # Windows runner and publishes them (klib + the runtime skiko-windows-x64.dll)
-# to this repo's GitHub Packages Maven registry.
+# to this repo's GitHub Packages Maven registry, under the fork's rebranded
+# coordinates com.bitsycore.skiko:skiko / :skiko-mingwx64 (the group is set by
+# DEFAULT_GROUP_ID in skiko/buildSrc/src/main/kotlin/properties.kt; only the
+# Maven coord is rebranded — the org.jetbrains.skiko.* package names stay).
 
 on:
   workflow_dispatch:
