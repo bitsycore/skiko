@@ -221,8 +221,13 @@ val Project.supportNativeMac: Boolean
 val Project.supportNativeLinux: Boolean
     get() = supportAllNative || findProperty(SkikoGradleProperties.NATIVE_LINUX) == "true" || isInIdea
 
+// Route 1a: Kotlin/Native Windows (mingwX64). Flag-only (no isInIdea) so it
+// stays opt-in via -Pskiko.native.windows.enabled=true.
+val Project.supportNativeWindows: Boolean
+    get() = findProperty("skiko.native.windows.enabled") == "true"
+
 val Project.supportAnyNative: Boolean
-    get() = supportAllNative || supportAnyNativeIos || supportNativeMac || supportNativeLinux
+    get() = supportAllNative || supportAnyNativeIos || supportNativeMac || supportNativeLinux || supportNativeWindows
 
 val Project.supportWeb: Boolean
     get() = findProperty(SkikoGradleProperties.WASM_ENABLED) == "true" || isInIdea

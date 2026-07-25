@@ -36,6 +36,14 @@ val skikoSourceSetHierarchyTemplate = KotlinHierarchyTemplate {
                 withLinux()
             }
 
+            // Route 1a: Kotlin/Native Windows. Joins nativeMain + nativeJsMain
+            // (via the nativeJs group below) so mingwX64 gets the full
+            // org.jetbrains.skia.* surface, exactly like linux. No-op unless the
+            // mingwX64() target is declared (-Pskiko.native.windows.enabled=true).
+            group("windows") {
+                withMingwX64()
+            }
+
             group("darwin") {
                 group("uikit") {
                     group("tvos")
