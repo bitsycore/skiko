@@ -321,6 +321,12 @@ kotlin {
         skikoProjectContext.configureNativeTarget(OS.TVOS, Arch.X64, tvosX64())
     }
 
+    // Route 1a (bitsycore fork): Kotlin/Native Windows via a DLL-backed Skia.
+    // Gated behind -Pskiko.native.windows.enabled=true so default builds are untouched.
+    if (project.findProperty("skiko.native.windows.enabled") == "true") {
+        skikoProjectContext.configureNativeTarget(OS.Windows, Arch.X64, mingwX64())
+    }
+
     sourceSets.commonMain.dependencies {
         implementation(kotlin("stdlib"))
         implementation(libs.coroutines.core)

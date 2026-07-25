@@ -132,6 +132,11 @@ void SKIKO_ASSERT(bool, const char*);
 #ifdef SKIKO_WASM
 #include <emscripten.h>
 #define SKIKO_EXPORT EMSCRIPTEN_KEEPALIVE extern "C"
+#elif defined(SKIKO_WINDOWS_DLL)
+/** Windows native DLL (Kotlin/Native mingwX64 via Route 1a): export the flat
+    org_jetbrains_skia_* C symbols from skiko.dll so a GNU import library can be
+    generated (dlltool) and linked by the K/N mingw linker. */
+#define SKIKO_EXPORT extern "C" __declspec(dllexport)
 #else
 #define SKIKO_EXPORT extern "C"
 #endif

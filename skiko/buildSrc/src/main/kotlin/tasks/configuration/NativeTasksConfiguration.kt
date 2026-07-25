@@ -2,17 +2,20 @@ package tasks.configuration
 
 import Arch
 import CompileSkikoCppTask
+import LinkSkikoTask
 import PatchSkiaSymbolsTask
 import OS
 import SkiaBuildType
 import SkikoProjectContext
 import WriteCInteropDefFile
 import compilerForTarget
+import linkerForTarget
 import dsl.TargetEnv
 import hostArch
 import isCompatibleWithHost
 import joinToTitleCamelCase
 import mutableListOfLinkerOptions
+import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.tasks.Exec
@@ -152,6 +155,16 @@ fun SkikoProjectContext.compileNativeBridgesTask(
                 }
                 flags.set(linuxFlags)
             }
+            OS.Windows -> {
+                // Route 1a: compile the native (nativeJsMain/cpp) bridge with clang-cl
+                // (CompileSkikoCppTask selects VisualCppCompilerArgBuilder for Windows),
+                // exporting the flat org_jetbrains_skia_* symbols via SKIKO_WINDOWS_DLL.
+                flags.set(listOf(
+                    *buildType.winCompilerFlags,
+                    "-DSKIKO_WINDOWS_DLL",
+                    *skiaPreprocessorFlags(OS.Windows, buildType),
+                ))
+            }
             else -> throw GradleException("$os not yet supported")
         }
 
@@ -194,6 +207,10 @@ fun configureCinterop(
 
 fun SkikoProjectContext.configureNativeTarget(os: OS, arch: Arch, target: KotlinNativeTarget) = with(this.project) {
     if (!os.isCompatibleWithHost) return
+    if (os == OS.Windows) {
+        this@configureNativeTarget.configureWindowsNativeTarget(arch, target)
+        return
+    }
 
     target.generateVersion(os, arch, skiko)
     val isUikitSim = target.isUikitSimulator()
@@ -373,6 +390,110 @@ fun SkikoProjectContext.configureNativeTarget(os: OS, arch: Arch, target: Kotlin
     }
 }
 
+
+// =====================================================================
+// MARK: Route 1a — Kotlin/Native Windows (mingwX64) via a DLL-backed Skia
+// =====================================================================
+// Unlike the mac/linux native path (which -include-binary's static Skia + the
+// bridge archive INTO the K/N binary), Windows links skiko + Skia into one
+// MSVC-ABI DLL (skiko-windows-x64.dll) exporting the flat org_jetbrains_skia_*
+// C symbols, generates a GNU import library (dlltool), and points the K/N
+// cinterop linkerOpts at it. Only the flat extern "C" surface crosses to K/N,
+// which sidesteps the MSVC<->GNU C++ ABI wall and KT-65671 (no C++ static
+// archive enters the K/N link graph).
+fun SkikoProjectContext.configureWindowsNativeTarget(
+    arch: Arch,
+    target: KotlinNativeTarget
+) = with(this.project) {
+    val os = OS.Windows
+    target.generateVersion(os, arch, skiko)
+
+    val targetString = "${os.id}-${arch.id}"
+    val unzipper = registerOrGetSkiaDirProvider(os, arch, isUikitSim = false)
+    val skiaBinDir = "${unzipper.get().absolutePath}/out/${buildType.id}-$targetString"
+    // Windows registers only TargetEnv.JVM (OS.validEnvs), and the native DLL
+    // links the identical MSVC-ABI Skia .libs as the JVM DLL, so reuse JVM env.
+    val resolvedBinaryInputs = resolveBinaryInputs(os, arch, TargetEnv.JVM, skiaBinDir)
+
+    val dllOutputName = "$libBaseName-$targetString.dll"
+    val importLibName = "lib$libBaseName-$targetString.dll.a"
+    val importLibDir = layout.buildDirectory.dir("nativeBridges/importLib/$targetString").get().asFile
+
+    // 1. Compile the nativeJsMain/cpp bridge with clang-cl (dllexport'd).
+    val compileTask = compileNativeBridgesTask(os, arch, isUikitSim = false)
+
+    // 2. Link skiko-windows-x64.dll with lld-link against the prebuilt Skia libs.
+    val linkTask = project.registerSkikoTask<LinkSkikoTask>("linkNativeBridgesDll", os, arch) {
+        dependsOn(unzipper, compileTask)
+        libFiles = project.files(resolvedBinaryInputs.staticArchivePaths.distinct())
+        objectFiles = project.fileTree(compileTask.map { it.outDir.get() }) { include("**/*.o") }
+        libDirs.set(windowsSdkPaths.libDirs.toList())
+        libOutputFileName.set(dllOutputName)
+        buildTargetOS.set(os)
+        buildSuffix.set("native")
+        buildTargetArch.set(arch)
+        buildVariant.set(buildType)
+        linker.set(linkerForTarget(os, arch))
+        flags.set(mutableListOf<String>().apply {
+            addAll(buildType.winLinkerFlags)
+            addAll(listOf(
+                "/NOLOGO", "/DLL", "/ignore:4217",
+                "Advapi32.lib", "gdi32.lib", "Dwmapi.lib", "ole32.lib",
+                "Propsys.lib", "shcore.lib", "Shlwapi.lib", "user32.lib", "opengl32.lib",
+                // Skia Direct3D backend (SK_DIRECT3D): D3D12SerializeRootSignature / D3DCompile.
+                "d3d12.lib", "d3dcompiler.lib", "dxgi.lib",
+                // ICU locale fns skiko's Kotlin binds directly via @SymbolName
+                // (Actuals.native.kt). They live inside the DLL (bundled ICU) but
+                // aren't dllexport'd, so force-export them for the K/N import lib.
+                "/EXPORT:uloc_getDefault_skiko", "/EXPORT:uloc_toLanguageTag_skiko"
+            ))
+            addAll(resolvedBinaryInputs.dynamicLibNames.map { "$it.lib" })
+            addAll(resolvedBinaryInputs.linkFlags)
+        })
+    }
+
+    // 3. Generate a GNU import library from the DLL's export table
+    //    (dumpbin -> .def -> dlltool) so the K/N mingw linker can resolve symbols.
+    val dumpbinPath = windowsSdkPaths.dumpbin.absolutePath
+    val genImportLib = project.registerSkikoTask<DefaultTask>("generateNativeImportLib", os, arch) {
+        dependsOn(linkTask)
+        val dllProvider = linkTask.map { it.outDir.get().asFile.resolve(dllOutputName) }
+        inputs.files(dllProvider)
+        outputs.dir(importLibDir)
+        doLast {
+            val dll = dllProvider.get()
+            importLibDir.mkdirs()
+            val exports = ProcessBuilder(dumpbinPath, "/EXPORTS", dll.absolutePath)
+                .redirectErrorStream(true).start()
+                .inputStream.bufferedReader().readText()
+            val names = exports.lineSequence().mapNotNull { line ->
+                val t = line.trim().split(Regex("\\s+"))
+                if (t.size >= 4 && t[0].toIntOrNull() != null && t[1].matches(Regex("[0-9A-Fa-f]+"))) t[3] else null
+            }.filter { it.isNotBlank() }.toList()
+            check(names.isNotEmpty()) { "No exports parsed from $dll via dumpbin" }
+            val def = importLibDir.resolve("$libBaseName-$targetString.def")
+            def.writeText("LIBRARY $dllOutputName\nEXPORTS\n${names.joinToString("\n")}\n")
+            val importLib = importLibDir.resolve(importLibName)
+            val dlltool = ProcessBuilder("dlltool", "-d", def.absolutePath, "-D", dllOutputName, "-l", importLib.absolutePath)
+                .redirectErrorStream(true).start()
+            val out = dlltool.inputStream.bufferedReader().readText()
+            check(dlltool.waitFor() == 0) { "dlltool failed:\n$out" }
+            logger.lifecycle("Route 1a: generated ${importLib.absolutePath} (${names.size} exports) + $dllOutputName")
+        }
+    }
+
+    // 4. Point the K/N cinterop linkerOpts at the import lib (absolute path;
+    //    portable packaging is a later step). The DLL must be on PATH at runtime.
+    configureCinterop(
+        cinteropName, os, arch, target, targetString,
+        listOf("-L${importLibDir.absolutePath.replace("\\", "/")}", "-l$libBaseName-$targetString")
+    )
+
+    // 5. Building the klib triggers the DLL + import-lib build.
+    target.compilations.all {
+        compileTaskProvider.configure { dependsOn(genImportLib) }
+    }
+}
 
 fun KotlinMultiplatformExtension.configureIOSTestsWithMetal(project: Project) {
     val metalTestTargets = listOf("iosX64", "iosSimulatorArm64")

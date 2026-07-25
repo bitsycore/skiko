@@ -28,7 +28,9 @@ actual suspend fun loadBytesFromPath(path: String): ByteArray {
         throw Error("File '$path' is too long")
     }
 
-    if (size == 0L) {
+    // ftell returns C `long` = 32-bit Int on Windows (LLP64), 64-bit Long on
+    // Unix. `==` rejects mixed Int/Long (unlike </>), so normalise to Long.
+    if (size.toLong() == 0L) {
         fclose(file)
         return byteArrayOf()
     }
