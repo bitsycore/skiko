@@ -13,6 +13,18 @@ gradle.allprojects {
                     password = System.getenv("GITHUB_TOKEN")
                 }
             }
+            // Self-hosted Reposilite — lets consumers resolve the fork without
+            // GitHub Packages authentication. Only added when CI provides creds.
+            if (System.getenv("BITSYCORE_MAVEN_USER") != null) {
+                repositories.maven {
+                    name = "Bitsycore"
+                    setUrl("https://maven.bitsycore.com/releases")
+                    credentials {
+                        username = System.getenv("BITSYCORE_MAVEN_USER")
+                        password = System.getenv("BITSYCORE_MAVEN_TOKEN")
+                    }
+                }
+            }
         }
     }
 }

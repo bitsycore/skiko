@@ -54,16 +54,20 @@ jobs:
           path: dependencies
           key: skia-${{ runner.os }}-m150
 
-      - name: Publish to GitHub Packages
+      - name: Publish to GitHub Packages and maven.bitsycore.com
         shell: bash
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BITSYCORE_MAVEN_USER: ${{ secrets.BITSYCORE_MAVEN_USER }}
+          BITSYCORE_MAVEN_TOKEN: ${{ secrets.BITSYCORE_MAVEN_TOKEN }}
         run: |
           ./gradlew --no-daemon --stacktrace \
             --init-script .github/gh-packages.init.gradle.kts \
             :skiko:publishMingwX64PublicationToGitHubPackagesRepository \
             :skiko:publishKotlinMultiplatformPublicationToGitHubPackagesRepository \
+            :skiko:publishMingwX64PublicationToBitsycoreRepository \
+            :skiko:publishKotlinMultiplatformPublicationToBitsycoreRepository \
             -Pskiko.native.windows.enabled=true \
             -Pdeploy.version="${{ github.event.inputs.version }}" \
             -Pdeploy.release=true \
